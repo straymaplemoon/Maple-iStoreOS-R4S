@@ -1,0 +1,79 @@
+name: Build Maple iStoreOS (R4S)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/build.yml"
+      - "config/r4s.config"
+  schedule:
+    - cron: "30 18 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: maple-istoreos-r4s
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    steps:
+      - name: Checkout customization
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo docker image prune --all --force || true
+          df -h
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ack asciidoc bash bc binutils bison build-essential             bzip2 ccache clang cmake cpio curl device-tree-compiler fastjar flex g++             gawk gcc-multilib g++-multilib gettext git gnutls-dev gperf haveged             help2man intltool libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev             libmpc-dev libmpfr-dev libncurses5-dev libncursesw5-dev libpython3-dev             libreadline-dev libssl-dev libtool lrzsz mkisofs msmtp nano             ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip             python3-pyelftools qemu-utils rsync scons squashfs-tools subversion             swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd zlib1g-dev
+
+      - name: Clone iStoreOS source
+        run: |
+          git clone --depth 1 --branch istoreos-25.12 https://github.com/istoreos/istoreos.git openwrt
+          cd openwrt
+          echo "Source commit: $(git rev-parse --short HEAD)"
+
+      - name: Add Nikki feed
+        working-directory: openwrt
+        run: |
+          echo 'src-git nikki https://github.com/nikkinikki-org/OpenWrt-nikki;main' >> feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Apply R4S configuration
+        run: |
+          cp config/r4s.config openwrt/.config
+          cd openwrt
+          echo 'CONFIG_PACKAGE_luci-app-nikki=y' >> .config
+          echo 'CONFIG_PACKAGE_nikki=y' >> .config
+          make defconfig
+          grep -E 'CONFIG_TARGET_rockchip_armv8_DEVICE_friendlyarm_nanopi-r4s=y|CONFIG_PACKAGE_(luci-app-nikki|nikki|docker|dockerd|luci-app-dockerman)=y' .config || true
+
+      - name: Download sources
+        working-directory: openwrt
+        run: |
+          make download -j8
+          find dl -size -1024c -delete
+
+      - name: Compile firmware
+        working-directory: openwrt
+        run: |
+          make -j"$(nproc)" || make -j1 V=s
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: Maple-iStoreOS-R4S-firmware
+          path: |
+            openwrt/bin/targets/rockchip/armv8/*friendlyarm_nanopi-r4s*.img.gz
+            openwrt/bin/targets/rockchip/armv8/*friendlyarm_nanopi-r4s*.manifest
+          if-no-files-found: error
+          retention-days: 14
